@@ -32,13 +32,15 @@ class ResBlock1(torch.nn.Module):
         ])
         self.convs2.apply(init_weights)
 
+        self.ff = nn.quantized.FloatFunctional()
+
     def forward(self, x):
         for c1, c2 in zip(self.convs1, self.convs2):
             xt = F.leaky_relu(x, LRELU_SLOPE)
             xt = c1(xt)
             xt = F.leaky_relu(xt, LRELU_SLOPE)
             xt = c2(xt)
-            x = xt + x
+            x = self.ff.add(xt, x)
         return x
 
     def remove_weight_norm(self):
@@ -60,11 +62,13 @@ class ResBlock2(torch.nn.Module):
         ])
         self.convs.apply(init_weights)
 
+        self.ff = nn.quantized.FloatFunctional()
+
     def forward(self, x):
         for c in self.convs:
             xt = F.leaky_relu(x, LRELU_SLOPE)
             xt = c(xt)
-            x = xt + x
+            x = self.ff.add(xt, x)
         return x
 
     def remove_weight_norm(self):
@@ -97,22 +101,28 @@ class Generator(torch.nn.Module):
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
 
+        self.quant = torch.quantization.QuantStub()
+        self.dequant = torch.quantization.DeQuantStub()
+
+        self.ff = nn.quantized.FloatFunctional()
+
     def forward(self, x):
+        x = self.quant(x)
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)
+            x = self.dequant(x)
             x = self.ups[i](x)
-            xs = None
-            for j in range(self.num_kernels):
-                if xs is None:
-                    xs = self.resblocks[i*self.num_kernels+j](x)
-                else:
-                    xs += self.resblocks[i*self.num_kernels+j](x)
-            x = xs / self.num_kernels
+            x = self.quant(x)
+            xs = self.resblocks[i*self.num_kernels](x)
+            for j in range(1, self.num_kernels):
+                xs = self.ff.add(xs, self.resblocks[i*self.num_kernels+j](x))
+            x = self.ff.mul_scalar(xs, 1.0 / self.num_kernels)
         x = F.leaky_relu(x)
         x = self.conv_post(x)
         x = torch.tanh(x)
-
+        x = self.dequant(x)
+        
         return x
 
     def remove_weight_norm(self):
