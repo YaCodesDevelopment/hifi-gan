@@ -107,21 +107,18 @@ class Generator(torch.nn.Module):
         self.ff = nn.quantized.FloatFunctional()
 
     def forward(self, x):
-        x = self.quant(x)
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, LRELU_SLOPE)
-            x = self.dequant(x)
             x = self.ups[i](x)
             x = self.quant(x)
             xs = self.resblocks[i*self.num_kernels](x)
             for j in range(1, self.num_kernels):
                 xs = self.ff.add(xs, self.resblocks[i*self.num_kernels+j](x))
-            x = self.ff.mul_scalar(xs, 1.0 / self.num_kernels)
+            x = self.dequant(xs) / self.num_kernels
         x = F.leaky_relu(x)
         x = self.conv_post(x)
         x = torch.tanh(x)
-        x = self.dequant(x)
         
         return x
 
